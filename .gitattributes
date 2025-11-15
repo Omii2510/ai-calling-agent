@@ -1,0 +1,2 @@
+*.py linguist-language=Python
+*.txt linguist-language=Text
