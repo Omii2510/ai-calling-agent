@@ -1,0 +1,6 @@
+Flask
+twilio
+groq
+gtts
+requests
+gunicorn
