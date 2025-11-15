@@ -6,29 +6,40 @@ from gtts import gTTS
 import requests
 import os
 
-# ----------------- Load ENV Variables -----------------
-TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN  = os.environ.get("TWILIO_AUTH_TOKEN")
-TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-
-client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-groq_client = Groq(api_key=GROQ_API_KEY)
-
-# ----------------- Setup Flask -----------------
 app = Flask(__name__)
+
+# ----------------- Load Environment Variables -----------------
+TW_SID = os.environ.get("TWILIO_ACCOUNT_SID")
+TW_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
+TW_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER")
+TARGET_NUMBER = os.environ.get("TARGET_PHONE_NUMBER")
+GROQ_KEY = os.environ.get("GROQ_API_KEY")
+
+client = Client(TW_SID, TW_TOKEN)
+groq = Groq(api_key=GROQ_KEY)
+
+SERVER_URL = os.environ.get("SERVER_URL")   # example: https://ai-calling-agent.onrender.com
 AUDIO_DIR = "audio"
 
-# Make sure audio directory exists
-os.makedirs(AUDIO_DIR, exist_ok=True)
+# Create audio folder if not exists
+if not os.path.exists(AUDIO_DIR):
+    os.makedirs(AUDIO_DIR)
 
-# ----------------- 1. Twilio Answers the Call -----------------
+
+# ----------------- Home Route -----------------
+@app.route("/")
+def home():
+    return "AI Calling Agent is running on Render!"
+
+
+# ----------------- Twilio Starts Call Here -----------------
 @app.route("/voice", methods=["POST"])
 def voice():
     resp = VoiceResponse()
 
     resp.say(
-        "Hello, this is your AI calling agent from AiKing Solutions. May I know if there are any job openings available?",
+        "Hello, this is your AI calling agent from AiKing Solutions. "
+        "May I know if there are any job openings available?",
         voice="alice"
     )
 
@@ -43,57 +54,45 @@ def voice():
     return Response(str(resp), mimetype="text/xml")
 
 
-# ----------------- 2. After HR Speaks -----------------
+# ----------------- Handle HR Recording -----------------
 @app.route("/recording", methods=["POST"])
 def recording():
-
     recording_url = request.form.get("RecordingUrl") + ".wav"
-    print("Recorded URL:", recording_url)
+    print("\n🎧 Recording URL:", recording_url)
 
-    # Download the audio
-    hr_audio_path = os.path.join(AUDIO_DIR, "hr.wav")
-    r = requests.get(recording_url, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN))
+    hr_audio = f"{AUDIO_DIR}/hr.wav"
+    r = requests.get(recording_url, auth=(TW_SID, TW_TOKEN))
 
-    with open(hr_audio_path, "wb") as f:
+    with open(hr_audio, "wb") as f:
         f.write(r.content)
 
-    # STT using Groq Whisper
-    with open(hr_audio_path, "rb") as audio_file:
-        stt = groq_client.audio.transcriptions.create(
-            file=audio_file,
+    # STT
+    with open(hr_audio, "rb") as audio:
+        stt = groq.audio.transcriptions.create(
+            file=audio,
             model="whisper-large-v3"
-        )
-    hr_text = stt.text
-    print("HR said:", hr_text)
+        ).text
 
-    # AI Response using Groq Llama 3.1
-    prompt = f"""
-    You are an AI calling agent. Reply professionally.
+    print("HR said:", stt)
 
-    HR said: "{hr_text}"
+    # LLM
+    prompt = f"You are an AI calling agent. HR said: '{stt}'. Reply professionally."
 
-    Your reply:
-    """
-
-    llm = groq_client.chat.completions.create(
+    reply = groq.chat.completions.create(
         model="llama-3.1-8b-instant",
         messages=[{"role": "user", "content": prompt}]
-    )
+    ).choices[0].message.content
 
-    ai_reply = llm.choices[0].message.content
-    print("AI Reply:", ai_reply)
+    print("AI Reply:", reply)
 
-    # TTS (gTTS)
-    reply_file = os.path.join(AUDIO_DIR, "reply.mp3")
-    gTTS(text=ai_reply, lang="en").save(reply_file)
+    # TTS
+    tts_file = f"{AUDIO_DIR}/reply.mp3"
+    gTTS(reply, lang="en").save(tts_file)
 
-    # Public URL for Twilio to play it
-    public_audio_url = request.url_root + "audio/reply.mp3"
+    audio_url = f"{SERVER_URL}/audio/reply.mp3"
 
     resp = VoiceResponse()
-    resp.play(public_audio_url)
-
-    # Continue recording to keep conversation going
+    resp.play(audio_url)
     resp.record(
         timeout=2,
         maxLength=10,
@@ -107,16 +106,20 @@ def recording():
 
 # ----------------- Serve Audio Files -----------------
 @app.route("/audio/<filename>")
-def audio(filename):
+def audio_file(filename):
     return send_from_directory(AUDIO_DIR, filename)
 
 
-# ----------------- Root -----------------
-@app.route("/", methods=["GET"])
-def home():
-    return "AI Calling Agent Running on Render!"
+# ----------------- Trigger Call Manually -----------------
+@app.route("/call", methods=["GET"])
+def call():
+    call = client.calls.create(
+        to=TARGET_NUMBER,
+        from_=TW_NUMBER,
+        url=f"{SERVER_URL}/voice"
+    )
+    return f"Call started! SID: {call.sid}"
 
 
-# ----------------- Start App -----------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run(host="0.0.0.0", port=5000)
